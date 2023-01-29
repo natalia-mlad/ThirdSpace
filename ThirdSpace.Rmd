@@ -1,0 +1,297 @@
+---
+title: "Natalia's Third Space Report"
+output: 
+  html_notebook: 
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    highlight: tango
+    theme: paper
+    fig_caption: yes
+    number_sections: no
+  blastula::blastula_email: default
+---
+
+# Set-Up
+
+```{r setup, message=FALSE, warning=FALSE}
+# packages:
+library(natalia) #custom
+library(knitr) #core
+library(tidyverse) #core
+library(lubridate) #datetimes
+library(ical) #calendar
+library(glue) #messages
+library(vcd) #mosaic
+library(janitor) #tables
+library(targets) #caching
+
+# options:
+opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+
+# goal:
+goal <- 36
+```
+
+```{targets class_types, tar_simple = TRUE}
+read_csv("data/class_types.csv")
+```
+
+```{targets classes_attended, tar_simple = TRUE}
+## classes attended
+# TODO, cache the connection results in case cannot open connection
+my_url <- paste0(
+  "https://thirdspace.fisikal.com/calendar.ics?auth_token=",
+  Sys.getenv("THIRDSPACE_KEY")
+)
+ical_parse_df(my_url) %>%
+  tibble() %>%
+  filter(uid != "447920804763") %>%
+  mutate(
+    Length = end - start,
+    Class = trimws(str_remove(summary, " at Canary Wharf")),
+    Trainer = str_remove(description, "Trainer: "),
+    # Date-time vars:
+    week_number = isoweek(start),
+    week_day = wday(start, label = TRUE, week_start = 1),
+    time_type = case_when(
+      am(start) == TRUE ~ "Morning",
+      hour(start) >= 12 & hour(start) <= 16 ~ "Afternoon",
+      pm(start) == TRUE ~ "Evening"
+    ) %>%
+      factor(
+        levels = c("Morning", "Afternoon", "Evening"),
+        ordered = TRUE
+      )
+  ) %>% 
+  left_join(class_types, by = c("Class" = "class_title"))
+```
+
+```{r}
+# tar_make()
+# tar_load(classes_attended)
+```
+
+
+```{r, eval=FALSE}
+# Step           Cycle Problem!
+# Metaburn!! also problem
+classes_attended2 <- classes_attended 
+  # natalia::fuzzy_join(class_types, by = c("Class" = "class_title"), useBytes = F, max.distance = .1) %>%
+  # left_join(class_types, by = c("JOIN" = "class_title")) %>% select(-JOIN)
+# check
+classes_attended2 %>%
+  select(Class, class_type) %>%
+  unique() %>%
+  arrange(class_type)
+```
+
+
+Value Aim: between £5 and £9 per class (i.e., 36-20 classes per month).
+
+
+# Analysis
+## This Month Analysis
+
+Value extracted so far:
+
+```{r}
+this_month <- classes_attended %>%
+  filter(year(end) == year(today())) %>%
+  filter(month(end) == month(today())) %>% 
+  filter(end <= now())
+glue("Current value this month: £{round(180/nrow(this_month),2)} per class.")
+```
+
+How to pace myself to meet my goals:
+
+```{r}
+days_left <- ceiling_date(today(), "month") - today() - 1
+pace <- (goal - nrow(this_month)) / as.numeric(days_left)
+glue(
+  "There are {days_left} days left in the month.
+  This means the necessary pace is {round(pace, 2)} classes per day for the rest of the month to hit the {goal} classes goal."
+)
+```
+
+This is how I can meet my aim this month:
+
+```{r}
+# y <- function(x) goal - nrow(this_month) - 2 * x
+# plot(y, from = 0, to = 10)
+x = 0:days_left
+y = 0:days_left
+z = 0:days_left
+expand_grid(x, y, z) %>%
+  filter(x + y + z <= days_left) %>%
+  filter(x + 2*y + 3*z == goal - nrow(this_month)) %>%
+  mutate(non_gym_days = days_left - x - y - z) %>%
+  arrange(non_gym_days) %>%
+  rename(Single_Class_Days = x, 
+         Double_Class_Days = y,
+         Triple_Class_Days = z)
+```
+
+```{r}
+this_month %>% 
+    tabyl(week_number, class_type)
+```
+
+## This Week Analysis
+
+```{r}
+classes_attended2 <- classes_attended %>% filter(end <= now())
+```
+
+```{r}
+past6days <- classes_attended %>% 
+  filter(end <= now() & start >= today() - 6)
+out <- past6days %>%
+  mutate(date = date(start)) %>%
+  # add the missing/ rest days
+  tabyl(date, class_type)
+tibble(out)
+#rest: 7-nrow(out)
+
+past6days$Class
+```
+
+2 (Active) Recovery
+2 Cardio
+3 Strength
+
+
+
+
+## All-Time Analysis
+### Value Analysis
+
+```{r, results='asis'}
+money_spent <- 180 * length(unique(ceiling_date(classes_attended$start, "month")))
+n <- nrow(filter(classes_attended, end <= now()))
+glue("Overall value so far: £{round(money_spent/n, 2)} per class.")
+# ifelse(money_spent/n >= 9, try better! {red}) 
+#<9 && >7 getting there! {yellow}
+#<=7 && >=5 good job! {green} 
+#<5 Whoa! gym break maybe? {purple}
+```
+
+```{r, eval=FALSE}
+library(crayon)
+green("d")
+```
+
+```{r}
+classes_attended %>%
+  group_by(year(start), month(start, label = T)) %>%
+  summarise(n = n()) %>%
+  mutate(`Value (£ per class)` = round(180 / n, 2)) %>%
+  rename(Month = `month(start, label = T)`, 
+         Year = `year(start)`,
+         `Classes #` = n)
+```
+
+### Other Stats
+
+My most popular classes:
+
+```{r}
+quick_summary(classes_attended, Class)
+```
+
+```{r}
+classes_attended %>%
+  ggplot(aes(x = class_type)) +
+  geom_bar()
+```
+
+
+```{r}
+classes_attended %>% 
+  tabyl(week_number, class_type) %>%
+  tibble()
+# classes_attended %>% group_by(week_number, class_type) %>% count()
+```
+
+Weekly:
+
+- Athletic and Rig ~ 2
+- Combat ~ 1-3
+- Cycle ~ 2
+- Dance ~ 1
+- Mind & Body ~ 2
+- Strength & Conditioning (!!) => 2!
+- Yoga ~ 1?
+
+3 days strength (48h inbetween), 2 days cardio, 2 days active recovery (M&B or Yoga)
+No more than 2 Hardcore cycle a week
+
+
+```{r}
+day_types <- classes_attended %>% 
+  mutate(date = date(start)) %>%
+  group_by(date, class_type) %>%
+  summarise() %>%
+  nest(class_type) %>% 
+  mutate(data = flatten(data))
+  # tabyl(date, class_type) %>% tibble() %>%
+  # nest(data = `Athletic and Rig`:Yoga)
+day_types <- day_types %>%
+  full_join(tibble(date = seq(min(day_types$date), max(day_types$date), by = "days"))) %>%
+  arrange(date) %>%
+  mutate(day_type = case_when(
+    is.null(data[[1]]) ~ "Rest",
+    "Athletic and Rig" %in% data[[1]] ~ "Strength",
+    "Strength and Conditioning" %in% data[[1]] ~ "Strength",
+    "PT Workshop" %in% data[[1]] ~ "Strength",
+    "Swimming" %in% data[[1]] ~ "Cardio",
+    "Dance" %in% data[[1]] ~ "Cardio",
+    "Cycle" %in% data[[1]] ~ "Cardio",
+    "Combat" %in% data[[1]] ~ "Cardio",
+    "Mind and Body" %in% data[[1]] ~ "Active Recovery",
+    "Yoga" %in% data[[1]] ~ "Active Recovery"
+  ))
+# day_types %>% filter("Dance" %in% data[[1]])
+# day_types %>% filter(str_detect(data, "Dance"))
+day_types %>%
+  mutate(data = paste0(data[[1]], collapse = ", ")) %>%
+  tail(20)
+day_types %>%
+  filter(date >= today() - 6 & date <= today()) %>%
+  quick_summary(day_type)
+```
+
+
+```{r}
+quick_summary(classes_attended, Trainer)
+```
+
+```{r}
+# quick_summary(classes_attended, time_type)
+classes_attended %>%
+  ggplot(aes(x = time_type)) +
+  geom_bar()
+hist(hour(classes_attended$start))
+```
+
+```{r}
+# quick_summary(classes_attended, week_day)
+classes_attended %>%
+  ggplot(aes(x = week_day)) +
+  geom_bar()
+```
+
+
+Classes not yet attended:
+
+```{r}
+class_types %>%
+  anti_join(classes_attended, by = c("class_title" = "Class")) %>%
+  arrange(class_type) %>%
+  select(class_type, class_title)
+```
+

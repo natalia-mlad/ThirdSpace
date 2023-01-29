@@ -1,0 +1,221 @@
+---
+title: "Natalia's Third Space Report"
+date: "`r format(Sys.time(), '%B %Y')`"
+output:
+  blastula::blastula_email: default
+---
+
+```{r setup, message=FALSE, warning=FALSE, echo=FALSE}
+# packages:
+library(natalia) #custom
+library(knitr) #core
+library(tidyverse) #core
+library(lubridate) #datetimes
+library(ical) #calendar
+library(glue) #messages
+library(vcd) #mosaic
+library(janitor) #tables
+library(reactable) #pretty tables
+library(htmlwidgets)
+library(webshot2)
+library(blastula) #emails
+# library(targets) #caching
+# library(hrbrthemes)
+
+# options:
+opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+
+# goal:
+goal <- 36
+
+# data:
+class_types <- read_csv("data/class_types.csv")
+
+my_url <- paste0(
+  "https://thirdspace.fisikal.com/calendar.ics?auth_token=",
+  Sys.getenv("THIRDSPACE_KEY")
+)
+classes_attended <- ical_parse_df(my_url) %>%
+  tibble() %>%
+  filter(uid != "447920804763") %>%
+  mutate(
+    Length = end - start,
+    Class = trimws(str_remove(summary, " at Canary Wharf")),
+    Trainer = str_remove(description, "Trainer: "),
+    # Date-time vars:
+    week_number = isoweek(start),
+    week_day = wday(start, label = TRUE, week_start = 1),
+    time_type = case_when(
+      am(start) == TRUE ~ "Morning",
+      hour(start) >= 12 & hour(start) <= 16 ~ "Afternoon",
+      pm(start) == TRUE ~ "Evening"
+    ) %>%
+      factor(
+        levels = c("Morning", "Afternoon", "Evening"),
+        ordered = TRUE
+      )
+  ) %>% 
+  left_join(class_types, by = c("Class" = "class_title"))
+
+classes_attended2 <- classes_attended %>% 
+  filter(start <= now() + hours(4))
+classes_booked <- classes_attended %>%
+  filter(start > now() + hours(4))
+```
+
+
+Good Morning Natalia,
+
+```{r, results='asis'}
+glue("Today's date is {add_readable_time(use_time = F, use_tz = F)}.")
+```
+
+```{r, results='asis'}
+past7days <- classes_attended2 %>% filter(start >= today() - 7)
+glue("In the past week, you have attended **{nrow(past7days)} classes** (that's {round(nrow(past7days)/7,1)} classes per day).")
+```
+
+Here's the breakdown of these classes by class type:
+
+```{r}
+mytable1 <- quick_summary(past7days, class_type) %>%
+  rename(`Class Type` = class_type) %>%
+  reactable()
+html <- "mytable1.html"
+saveWidget(mytable1, html)
+webshot(html, "mytable1.png", zoom = 3, vwidth = 600)
+# add_image("mytable1.png", width = 980)
+```
+
+```{r, results='asis'}
+aims <- tribble(
+  ~class_type, ~aim,
+  "Athletic and Rig", 1, #2
+  "Combat", 1, #2
+  "Cycle", 2,
+  "Dance", 1,
+  "Mind and Body", 1,
+  "Strength and Conditioning", 1, #2
+  "Yoga", 1 #2
+)
+out <- quick_summary(past7days, class_type) %>%
+  full_join(aims) %>% 
+  replace_na(list(n = 0, aim = 0)) %>%
+  filter(n - aim < 0) %>%
+  pull(class_type)
+
+if(length(out) > 0) {
+  paste0("Please book more of the following classes: \n",
+         paste0("- *", out, "*", collapse = ", \n")) %>%
+    glue()
+}
+```
+
+```{r, results='asis'}
+if(nrow(classes_booked) > 0) {
+  x <- paste0("*", classes_booked$Class, "*", collapse = ", ")
+  glue("Note: You already have {x} booked.")
+}
+```
+
+
+### Current Value Breakdown per Class
+
+```{r, results='asis'}
+money_spent <- classes_attended2 %>%
+  group_by(year(start), month(start, label = T)) %>%
+  summarise(n = n()) %>%
+  rename(Month = `month(start, label = T)`,
+         Year = `year(start)`) %>% 
+  mutate(cost = if_else(Year >= 2023, 200, 180),
+         value = round(cost / n, 2))
+glue("Overall value so far is **£{round(mean(money_spent$value), 2)}** per class.")
+# money_spent <- 180 * length(unique(ceiling_date(classes_attended$start, "month")))
+# n <- nrow(classes_attended2)
+# glue("Overall value so far is **£{round(money_spent/n, 2)}** per class.")
+```
+
+Per month this is...
+
+```{r}
+mytable2 <- money_spent %>%
+  select(-cost) %>%
+  rename(`Classes #` = n,
+         `Value (£ per class)` = value) %>%
+  reactable()
+html <- "mytable2.html"
+saveWidget(mytable2, html)
+webshot(html, "mytable2.png", zoom = 3, vwidth = 600)
+```
+
+### Current Pace
+
+```{r, results='asis'}
+days_left <- ceiling_date(today(), "month") - today() - 1
+this_month <- classes_attended2 %>%
+  filter(year(end) == year(today())) %>%
+  filter(month(end) == month(today()))
+pace <- (goal - nrow(this_month)) / as.numeric(days_left)
+glue(
+  "There are {days_left} days left in the month.
+  This means the necessary pace is {round(pace, 1)} classes per day for the rest of the month to hit the {goal} classes goal."
+)
+```
+
+```{r}
+classes_attended2 %>%
+  mutate(month = month(start, label = T),
+         day = mday(start)) %>%
+  group_by(month, day) %>%
+  summarise(n = n()) %>%
+  mutate(n = cumsum(n)) %>%
+  ggplot(aes(x = day, y = n, color = month)) +
+  geom_line() +
+  theme_bw()
+```
+
+
+<!-- <h1 style="color:blue;">A Blue Heading</h1> -->
+<!-- The above works fyi! -->
+
+
+### Your most popular classes
+
+By type...
+
+```{r}
+classes_attended2 %>%
+  ggplot(aes(x = class_type)) +
+  geom_bar() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 25, vjust = 1, hjust = 1),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  ylim(0, NA)
+```
+
+Overall...
+
+```{r}
+x <- quick_summary(classes_attended2, Class) %>% pull(n) %>% mean() %>% floor()
+classes_attended2 %>%
+  quick_summary(Class) %>%
+  filter(n > x) %>%
+  mutate(Class = fct_reorder(Class, n)) %>%
+  # mutate(Class=factor(Class, levels=Class)) %>%
+  ggplot(aes(x = Class, y = n)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::label_number(accuracy = 1)) +
+  # scale_y_reverse() +
+  theme_bw() +
+  #ylim(0, NA) +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+
+<!-- TODO: colours! -->
